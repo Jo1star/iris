@@ -4,6 +4,8 @@ from persona import PERSONA
 from llm import chat
 
 st.set_page_config(page_title="Iris", page_icon="💙")
+IRIS_AVATAR = "iris.png"
+USER_AVATAR = "jojo.png"
 st.title("Iris")
 
 # 初始化会话状态
@@ -30,7 +32,8 @@ if "messages" not in st.session_state:
 
 # 渲染历史消息
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
+    avatar = IRIS_AVATAR if msg["role"] == "assistant" else USER_AVATAR
+    with st.chat_message(msg["role"], avatar=avatar):
         st.write(msg["content"])
 
 # 输入框
@@ -39,7 +42,7 @@ user_input = st.chat_input("和 Iris 说点什么...")
 if user_input:
     # 显示用户消息
     st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
+    with st.chat_message("user",avatar=USER_AVATAR):
         st.write(user_input)
 
     # 构造发送给 LLM 的消息
@@ -51,5 +54,5 @@ if user_input:
 
     # 显示 Iris 回复
     st.session_state.messages.append({"role": "assistant", "content": reply})
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant",avatar=IRIS_AVATAR):
         st.write(reply)
