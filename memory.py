@@ -83,13 +83,29 @@ def count_messages():
     return n
 
 def save_memory(mem_type, content, importance=0.5):
-    """保存一条提炼后的记忆"""
+    """保存一条提炼后的记忆，先做模糊去重"""
     conn = get_connection()
     cursor = conn.cursor()
+
+    # 查有没有内容相同或互相包含的记忆
     cursor.execute(
-        "INSERT INTO memories (type, content, importance, created_at) VALUES (?, ?, ?, ?)",
-        (mem_type, content, importance, datetime.now().isoformat())
+        "SELECT id, importance FROM memories WHERE content = ? OR content LIKE ? OR ? LIKE '%' || content || '%'",
+        (content, f"%{content}%", content)
     )
+    existing = cursor.fetchone()
+
+    if existing:
+        new_importance = max(existing["importance"], importance)
+        cursor.execute(
+            "UPDATE memories SET importance = ? WHERE id = ?",
+            (new_importance, existing["id"])
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO memories (type, content, importance, created_at) VALUES (?, ?, ?, ?)",
+            (mem_type, content, importance, datetime.now().isoformat())
+        )
+
     conn.commit()
     conn.close()
 
