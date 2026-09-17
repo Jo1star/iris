@@ -276,3 +276,28 @@ def apply_time_decay(decay_days=30, archive_threshold=0.2):
     conn.commit()
     conn.close()
     return archived_count
+
+def last_session_gap(threshold_minutes=30):
+    """返回'距上次对话多久'的中文描述；间隔小于阈值返回 None"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT created_at FROM messages ORDER BY id DESC LIMIT 1")
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    try:
+        last = datetime.fromisoformat(row["created_at"])
+    except (TypeError, ValueError):
+        return None
+    delta = datetime.now() - last
+    minutes = delta.total_seconds() / 60
+    if minutes < threshold_minutes:
+        return None
+    if minutes < 60:
+        return f"约 {int(minutes)} 分钟"
+    hours = minutes / 60
+    if hours < 24:
+        return f"约 {int(hours)} 小时"
+    days = hours / 24
+    return f"约 {int(days)} 天"

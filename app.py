@@ -75,7 +75,13 @@ if user_input:
     for m in related:
         memory.touch_memory(m["id"])
 
-    system_content = PERSONA
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now_line = f"\n\n当前时间：{now}"
+    gap = memory.last_session_gap()
+    if gap:
+        now_line += f"\n距上次和 JoJo 聊天：{gap}"
+
+    system_content = PERSONA + now_line
     if related:
         memory_lines = "\n".join(
             [f"- [{m['type']}] {m['content']}" for m in related]
