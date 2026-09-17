@@ -2,6 +2,7 @@ import streamlit as st
 from datetime import datetime
 from persona import PERSONA
 from llm import chat
+import vector_store
 import memory
 import extractor
 
@@ -72,8 +73,26 @@ if user_input:
     with st.chat_message("user", avatar=USER_AVATAR):
         st.write(user_input)
 
+    # 向量语义检索相关记忆
+    related_contents = vector_store.search_memories(user_input, limit=5)
+
+    # 从 SQLite 读回完整信息（type、importance）
+    all_memories = memory.load_memories(limit=50)
+    related = [m for m in all_memories if m["content"] in related_contents]
+
+    # 拼进 system prompt
+    system_content = PERSONA
+    if related:
+        memory_lines = "\n".join(
+            [f"- [{m['type']}] {m['content']}" for m in related]
+        )
+        system_content += (
+            f"\n\n你记得关于 JoJo 的这些事：\n{memory_lines}\n\n"
+            "在合适的时候自然地用上这些记忆，不要生硬地复述。"
+        )
+
     # 构造发送给 LLM 的消息
-    llm_messages = [{"role": "system", "content": PERSONA}]
+    llm_messages = [{"role": "system", "content": system_content}]
     llm_messages += st.session_state.messages
 
     # 获取回复

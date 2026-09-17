@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+import vector_store
 
 DB_PATH = Path(__file__).parent / "iris.db"
 
@@ -83,11 +84,10 @@ def count_messages():
     return n
 
 def save_memory(mem_type, content, importance=0.5):
-    """保存一条提炼后的记忆，先做模糊去重"""
+    """保存一条记忆，同时写入 SQLite 和向量库"""
     conn = get_connection()
     cursor = conn.cursor()
 
-    # 查有没有内容相同或互相包含的记忆
     cursor.execute(
         "SELECT id, importance FROM memories WHERE content = ? OR content LIKE ? OR ? LIKE '%' || content || '%'",
         (content, f"%{content}%", content)
@@ -100,14 +100,20 @@ def save_memory(mem_type, content, importance=0.5):
             "UPDATE memories SET importance = ? WHERE id = ?",
             (new_importance, existing["id"])
         )
+        conn.commit()
+        conn.close()
+        # 更新向量库
+        vector_store.add_memory(existing["id"], content)
     else:
         cursor.execute(
             "INSERT INTO memories (type, content, importance, created_at) VALUES (?, ?, ?, ?)",
             (mem_type, content, importance, datetime.now().isoformat())
         )
-
-    conn.commit()
-    conn.close()
+        new_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        # 写入向量库
+        vector_store.add_memory(new_id, content)
 
 
 def load_memories(limit=30):
@@ -140,3 +146,8 @@ def clear_memories():
     cursor.execute("DELETE FROM memories")
     conn.commit()
     conn.close()
+
+    # 清空向量库
+    all_ids = vector_store.collection.get()["ids"]
+    if all_ids:
+        vector_store.collection.delete(ids=all_ids)
