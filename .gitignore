@@ -4,3 +4,4 @@ __pycache__/
 .env
 *.db
 .idea/
+chroma_db/
