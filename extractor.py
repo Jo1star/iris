@@ -1,5 +1,5 @@
 import json
-from llm import chat
+from llm import extract_chat
 
 EXTRACT_PROMPT = """
 你是一个记忆抽取器。从对话中抽取值得长期记住的信息。
@@ -38,7 +38,7 @@ def extract(user_input, assistant_reply):
         user_input=user_input,
         assistant_reply=assistant_reply
     )
-    raw = chat([{"role": "user", "content": prompt}])
+    raw = extract_chat([{"role": "user", "content": prompt}])
 
 
     # 去掉可能的 markdown 代码块
