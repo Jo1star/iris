@@ -52,3 +52,24 @@ def delete_memory(memory_id):
 
 def count_vectors():
     return collection.count()
+
+def find_similar(content, limit=1):
+    """返回与 content 最相似的记忆，带相似度（1 - 余弦距离）"""
+    if collection.count() == 0:
+        return []
+    query_embedding = model.encode(content).tolist()
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=min(limit, collection.count())
+    )
+    ids = results["ids"][0]
+    docs = results["documents"][0]
+    dists = results["distances"][0]
+    return [
+        {
+            "id": int(ids[i]),
+            "content": docs[i],
+            "similarity": 1 - dists[i],
+        }
+        for i in range(len(ids))
+    ]

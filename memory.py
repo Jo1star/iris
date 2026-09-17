@@ -5,6 +5,8 @@ import vector_store
 
 DB_PATH = Path(__file__).parent / "iris.db"
 
+SIM_MERGE = 0.90   # 相似度 > 0.90 → 合并，不新增
+SIM_GRAY  = 0.70   # 0.70 ~ 0.90 → 新增但打印日志，观察用
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -103,36 +105,64 @@ def count_messages():
     return n
 
 def save_memory(mem_type, content, importance=0.5):
-    """保存一条记忆，同时写入 SQLite 和向量库"""
+    content = content.strip()
+    if not content:
+        return "empty"
+
+    # 第一层：语义去重
+    similar = vector_store.find_similar(content, limit=1)
+    if similar:
+        top = similar[0]
+        sim = top["similarity"]
+        if sim > SIM_MERGE:
+            _merge_memory(top["id"], importance)
+            return "merged"
+        elif sim >= SIM_GRAY:
+            print(f"[dedup 灰区] sim={sim:.3f} 新: {content} | 旧: {top['content']}")
+
+    # 第二层：字符串模糊去重（兜底）
     conn = get_connection()
     cursor = conn.cursor()
-
     cursor.execute(
-        "SELECT id, importance FROM memories WHERE content = ? OR content LIKE ? OR ? LIKE '%' || content || '%'",
+        "SELECT id FROM memories WHERE content = ? OR content LIKE ? OR ? LIKE '%' || content || '%'",
         (content, f"%{content}%", content)
     )
     existing = cursor.fetchone()
-
     if existing:
-        new_importance = max(existing["importance"], importance)
-        cursor.execute(
-            "UPDATE memories SET importance = ? WHERE id = ?",
-            (new_importance, existing["id"])
-        )
-        conn.commit()
         conn.close()
-        # 更新向量库
-        vector_store.add_memory(existing["id"], content)
-    else:
-        cursor.execute(
-            "INSERT INTO memories (type, content, importance, created_at) VALUES (?, ?, ?, ?)",
-            (mem_type, content, importance, datetime.now().isoformat())
-        )
-        new_id = cursor.lastrowid
-        conn.commit()
+        _merge_memory(existing["id"], importance)
+        return "merged_str"
+
+    # 新增
+    cursor.execute(
+        "INSERT INTO memories (type, content, importance, created_at, last_accessed, archived) "
+        "VALUES (?, ?, ?, ?, ?, 0)",
+        (mem_type, content, importance,
+         datetime.now().isoformat(), datetime.now().isoformat())
+    )
+    new_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    vector_store.add_memory(new_id, content)
+    return "inserted"
+
+
+def _merge_memory(memory_id, importance):
+    """把新记忆的重要性合并到旧记忆上，同时刷新 last_accessed"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT importance FROM memories WHERE id = ?", (memory_id,))
+    row = cursor.fetchone()
+    if row is None:
         conn.close()
-        # 写入向量库
-        vector_store.add_memory(new_id, content)
+        return
+    new_imp = max(row["importance"], importance)
+    cursor.execute(
+        "UPDATE memories SET importance = ?, last_accessed = ? WHERE id = ?",
+        (new_imp, datetime.now().isoformat(), memory_id)
+    )
+    conn.commit()
+    conn.close()
 
 
 def load_memories(limit=30, include_archived=False):
