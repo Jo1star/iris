@@ -12,6 +12,7 @@ Iris 0.1
 - Git + GitHub + SSH
 - SQLite 持久化对话历史
 - 记忆抽取，存入 memories 表
+- 通过樱花 frp 内网穿透，实现移动端公网访问，记忆统一存储于本地 SQLite
 
 ## 当前文件
 - app.py：Streamlit 主界面，负责对话、记忆抽取、侧边栏
