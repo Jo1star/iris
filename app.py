@@ -3,6 +3,7 @@ from datetime import datetime
 from persona import PERSONA
 from llm import chat
 import memory
+import extractor
 
 st.set_page_config(page_title="Iris", page_icon="🌸")
 st.title("Iris")
@@ -15,11 +16,19 @@ memory.init_db()
 
 # 侧边栏：显示记忆条数 + 清空按钮
 with st.sidebar:
-    st.write(f"记忆条数：{memory.count_messages()}")
-    if st.button("清空记忆"):
+    st.write(f"对话条数：{memory.count_messages()}")
+    st.write(f"记忆条数：{memory.count_memories()}")
+    if st.button("清空对话"):
         memory.clear_all()
         st.session_state.messages = []
         st.rerun()
+    if st.button("清空记忆"):
+        memory.clear_memories()
+        st.rerun()
+
+    with st.expander("查看记忆"):
+        for m in memory.load_memories(limit=20):
+            st.write(f"[{m['type']}] {m['content']} ({m['importance']})")
 
 # 初始化会话状态
 if "messages" not in st.session_state:
@@ -75,3 +84,12 @@ if user_input:
     memory.save_message("assistant", reply)
     with st.chat_message("assistant", avatar=IRIS_AVATAR):
         st.write(reply)
+
+    # 抽取记忆
+    extracted = extractor.extract(user_input, reply)
+    for m in extracted:
+        memory.save_memory(
+            mem_type=m.get("type", "fact"),
+            content=m.get("content", ""),
+            importance=float(m.get("importance", 0.5))
+        )

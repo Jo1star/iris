@@ -23,6 +23,15 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            importance REAL DEFAULT 0.5,
+            created_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -73,3 +82,45 @@ def count_messages():
     conn.close()
     return n
 
+def save_memory(mem_type, content, importance=0.5):
+    """保存一条提炼后的记忆"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO memories (type, content, importance, created_at) VALUES (?, ?, ?, ?)",
+        (mem_type, content, importance, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_memories(limit=30):
+    """读取最近的记忆"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT type, content, importance FROM memories ORDER BY id DESC LIMIT ?",
+        (limit,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def count_memories():
+    """统计记忆条数"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as c FROM memories")
+    n = cursor.fetchone()["c"]
+    conn.close()
+    return n
+
+
+def clear_memories():
+    """清空所有提炼记忆"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM memories")
+    conn.commit()
+    conn.close()
