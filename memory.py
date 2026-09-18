@@ -358,3 +358,35 @@ def last_session_gap(threshold_minutes=30):
         return f"约 {int(hours)} 小时"
     days = hours / 24
     return f"约 {int(days)} 天"
+
+def retrieve_memories(query, limit=5, candidate_limit=20):
+    """按 相似度×重要性 加权检索记忆，返回 top-K"""
+    candidates = vector_store.find_similar(query, limit=candidate_limit)
+    if not candidates:
+        return []
+
+    scored = []
+    conn = get_connection()
+    cursor = conn.cursor()
+    for c in candidates:
+        cursor.execute(
+            "SELECT id, type, content, importance FROM memories WHERE id = ? AND archived = 0",
+            (c["id"],)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            continue
+        sim = c["similarity"]
+        imp = row["importance"]
+        score = sim * (0.5 + 0.5 * imp)
+        scored.append({
+            "id": row["id"],
+            "type": row["type"],
+            "content": row["content"],
+            "importance": imp,
+            "similarity": sim,
+            "score": score,
+        })
+    conn.close()
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:limit]

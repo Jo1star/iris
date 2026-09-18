@@ -62,3 +62,13 @@ def extract_chat(messages, max_tokens=500):
         max_tokens=max_tokens
     )
     return response.choices[0].message.content
+
+def chat_with_tools(messages, tools, max_tokens=500):
+    """支持 function calling 的对话。返回完整 message 对象（可能带 tool_calls）"""
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=messages,
+        tools=tools,
+        max_tokens=max_tokens
+    )
+    return response.choices[0].message

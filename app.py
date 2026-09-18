@@ -40,6 +40,19 @@ with st.sidebar:
         with st.spinner("Iris 正在写..."):
             result = diary.write_diary()
         st.success(result)
+    with st.expander("Iris 主动说的话", expanded=False):
+        conn = memory.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT content, intent, created_at FROM agent_messages ORDER BY id DESC LIMIT 10"
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        if not rows:
+            st.write("（她还没有主动说过话）")
+        else:
+            for r in rows:
+                st.write(f"[{r['created_at'][:16]}] {r['content']}")
 
     with st.expander("查看记忆"):
         for m in memory.load_memories(limit=20):
