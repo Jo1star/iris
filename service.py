@@ -5,6 +5,7 @@ from llm import chat, chat_stream
 import memory
 import extractor
 import vector_store
+import emotion
 
 
 def generate_opening():
@@ -39,6 +40,14 @@ def _build_messages(user_input, recent_messages, gap):
         now_line += f"\n距上次和 JoJo 聊天：{gap}"
 
     system_content = PERSONA + now_line
+
+    # 注入情绪状态
+    emotion_state = emotion.get_state()
+    state_name = emotion_state["state"]
+    state_desc = emotion.STATES[state_name]["desc"]
+    system_content += f"\n\n你现在的情绪状态：{state_name}（{state_desc}）"
+    system_content += "\n请在回复中自然体现这个情绪，不要直接说出状态名。"
+
     if related:
         memory_lines = "\n".join([f"- [{m['type']}] {m['content']}" for m in related])
         system_content += (
@@ -53,6 +62,10 @@ def _build_messages(user_input, recent_messages, gap):
 
 def stream_reply(user_input, recent_messages, max_tokens=500):
     """流式生成回复（生成器）。无副作用，保存逻辑在 app.py"""
+    # 先根据用户输入更新情绪状态
+    new_state, intensity, reason = emotion.decide_next_state(user_input)
+    emotion.set_state(new_state, intensity, reason)
+
     gap = memory.last_session_gap()
     messages = _build_messages(user_input, recent_messages, gap)
     yield from chat_stream(messages, max_tokens=max_tokens)

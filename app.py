@@ -3,6 +3,7 @@ from persona import PERSONA
 import memory
 import diary
 import service
+import emotion
 
 st.set_page_config(page_title="Iris", page_icon="🌸")
 st.title("Iris")
@@ -12,11 +13,22 @@ USER_AVATAR = "jojo.png"
 
 memory.init_db()
 memory.apply_time_decay()
+emotion.init_emotion_table()
 
 with st.sidebar:
     st.write(f"对话条数：{memory.count_messages()}")
     st.write(f"记忆条数：{memory.count_memories()}")
     st.write(f"归档记忆：{memory.count_archived()}")
+    emo = emotion.get_state()
+    st.write(f"当前情绪：{emo['state']}（{emo['intensity']:.2f}）")
+    with st.expander("查看情绪历史"):
+        conn = emotion.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT state, intensity, reason, created_at FROM emotion_log ORDER BY id DESC LIMIT 20")
+        rows = cursor.fetchall()
+        conn.close()
+        for r in rows:
+            st.write(f"[{r['created_at'][:16]}] {r['state']}（{r['intensity']:.2f}）— {r['reason']}")
     if st.button("清空对话"):
         memory.clear_all()
         st.session_state.messages = []
