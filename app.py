@@ -6,6 +6,7 @@ from llm import chat, chat_stream
 import memory
 import extractor
 import vector_store
+import diary
 
 st.set_page_config(page_title="Iris", page_icon="🌸")
 st.title("Iris")
@@ -26,7 +27,10 @@ with st.sidebar:
     if st.button("清空记忆"):
         memory.clear_memories()
         st.rerun()
-
+    if st.button("让 Iris 写今天的日记"):
+        with st.spinner("Iris 正在写..."):
+            result = diary.write_diary()
+        st.success(result)
     with st.expander("查看记忆"):
         for m in memory.load_memories(limit=20):
             st.write(f"[{m['type']}] {m['content']} ({m['importance']:.2f})")
