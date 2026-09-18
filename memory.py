@@ -2,11 +2,16 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 import vector_store
+from llm import extract_chat
 
 DB_PATH = Path(__file__).parent / "iris.db"
 
 SIM_MERGE = 0.90   # 相似度 > 0.90 → 合并，不新增
 SIM_GRAY  = 0.70   # 0.70 ~ 0.90 → 新增但打印日志，观察用
+
+DEDUP_LOG = Path(__file__).parent / "dedup_gray.log"
+
+NEGATION_WORDS = ["不", "没", "别", "不再", "停止", "取消", "戒", "放弃", "讨厌"]
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -108,6 +113,15 @@ def save_memory(mem_type, content, importance=0.5):
     content = content.strip()
     if not content:
         return "empty"
+    # 第零层：否定句特殊通道（不依赖相似度）
+    if _has_negation(content):
+        candidates = vector_store.find_similar(content, limit=3)
+        for c in candidates:
+            if c["similarity"] >= 0.4:  # 放得很宽，靠 LLM 判断
+                if _is_conflict(c["content"], content):
+                    print(f"[否定冲突] 归档：{c['content']}")
+                    _archive_memory(c["id"])
+                    break  # 只归档最相似的一条
 
     # 第一层：语义去重
     similar = vector_store.find_similar(content, limit=1)
@@ -118,8 +132,14 @@ def save_memory(mem_type, content, importance=0.5):
             _merge_memory(top["id"], importance)
             return "merged"
         elif sim >= SIM_GRAY:
-            print(f"[dedup 灰区] sim={sim:.3f} 新: {content} | 旧: {top['content']}")
+            line = f"[dedup 灰区] sim={sim:.3f} 新: {content} | 旧: {top['content']}"
+            print(line)
+            with open(DEDUP_LOG, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat()} {line}\n")
 
+            if _is_conflict(top["content"], content):
+                print(f"[冲突] 归档旧记忆：{top['content']}")
+                _archive_memory(top["id"])
     # 第二层：字符串模糊去重（兜底）
     conn = get_connection()
     cursor = conn.cursor()
@@ -146,6 +166,43 @@ def save_memory(mem_type, content, importance=0.5):
     vector_store.add_memory(new_id, content)
     return "inserted"
 
+def _has_negation(content):
+    return any(w in content for w in NEGATION_WORDS)
+
+
+
+def _is_conflict(old_content, new_content):
+    """用 LLM 判断两条记忆是否矛盾"""
+    prompt = f"""判断以下两条关于 JoJo 的记忆是否矛盾。
+
+def _has_negation(content):
+    return any(w in content for w in NEGATION_WORDS)
+
+旧记忆：{old_content}
+新记忆：{new_content}
+
+矛盾的定义：两条记忆不能同时为真。
+- "喜欢画画" vs "不喜欢画画" → 矛盾
+- "喜欢画画" vs "喜欢音乐" → 不矛盾（不同的事）
+- "养了一只猫叫小白" vs "养了一只猫" → 不矛盾（只是更详细）
+
+只输出一个词：矛盾 或 不矛盾
+"""
+    try:
+        result = extract_chat([{"role": "user", "content": prompt}], max_tokens=10)
+        return "矛盾" in result and "不矛盾" not in result
+    except Exception as e:
+        print(f"[冲突判断失败] {e}")
+        return False
+
+
+def _archive_memory(memory_id):
+    """归档一条记忆（软删除，可恢复）"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE memories SET archived = 1 WHERE id = ?", (memory_id,))
+    conn.commit()
+    conn.close()
 
 def _merge_memory(memory_id, importance):
     """把新记忆的重要性合并到旧记忆上，同时刷新 last_accessed"""
