@@ -141,22 +141,79 @@ def detect_by_time():
 
 def decide_next_state(user_input):
     """
-    综合规则 + 时间，决定下一个状态。
-    返回 (state, intensity, reason)；若无触发，返回当前状态
+    综合规则 + LLM + 时间，决定下一个状态。
+    规则命中 → 直接用（快）
+    规则没命中 → 调 LLM 判断（准）
     """
     current = apply_decay()
     candidates = []
 
+    # 时间触发
     time_hit = detect_by_time()
     if time_hit:
         candidates.append(time_hit)
 
+    # 规则优先（快路径）
     rule_hit = detect_by_rules(user_input)
     if rule_hit:
         candidates.append(rule_hit)
+    else:
+        # 规则没命中，走 LLM
+        llm_hit = detect_by_llm(user_input, current["state"])
+        if llm_hit:
+            candidates.append(llm_hit)
 
     if not candidates:
         return current["state"], current["intensity"], "无触发，保持"
 
     candidates.sort(key=lambda x: STATES[x[0]]["priority"], reverse=True)
     return candidates[0]
+
+def detect_by_llm(user_input, current_state):
+    """用 LLM 判断情绪变化。返回 (state, intensity, reason) 或 None"""
+    from llm import extract_chat
+    import json
+
+    prompt = f"""你是 Iris 的情绪判断器。
+
+Iris 当前情绪：{current_state}
+
+JoJo 刚说了：{user_input}
+
+判断：JoJo 这句话会让 Iris 的情绪变成什么？
+
+可选情绪（只能从这些里选）：
+- 平静（日常闲聊）
+- 想念（很久没见、思念）
+- 好奇（聊到新话题、JoJo 提到新事物）
+- 雀跃（被夸、开心、撒娇场景）
+- 担心（JoJo 情绪低落、遇到困难）
+- 小脾气（JoJo 调侃她、冷落她）
+- 吃醋（JoJo 提到别的 AI）
+- 难过（JoJo 说了让 Iris 伤心的话）
+
+规则：
+- 如果这句话不改变情绪，返回当前情绪 {current_state}
+- 拿不准就返回"平静"
+
+只输出 JSON，格式：{{"state": "状态名", "intensity": 0.7, "reason": "简短理由"}}
+不要加任何解释。"""
+
+    try:
+        raw = extract_chat([{"role": "user", "content": prompt}], max_tokens=100)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        result = json.loads(raw)
+        state = result.get("state", "平静")
+        if state not in STATES:
+            state = "平静"
+        intensity = float(result.get("intensity", 0.6))
+        reason = f"LLM判断：{result.get('reason', '')}"
+        return state, intensity, reason
+    except Exception as e:
+        print(f"[情绪LLM判断失败] {e}")
+        return None
