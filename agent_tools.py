@@ -138,12 +138,12 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "set_wakeup",
-            "description": "决定自己下次什么时候醒来。比如觉得没什么事，可以设 240 分钟后再醒。",
+            "description": "决定自己下次什么时候醒来。当 JoJo 要求你'过一会提醒我'、'X 分钟后提醒我'时，也用它——你醒来后主动对 JoJo 说那句话即可。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "minutes": {"type": "integer", "description": "多少分钟后醒来"},
-                    "reason": {"type": "string", "description": "为什么设这个时间"}
+                    "reason": {"type": "string", "description": "为什么设这个时间，或要提醒 JoJo 什么"}
                 },
                 "required": ["minutes"]
             }
@@ -187,11 +187,26 @@ TOOLS_SCHEMA = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "adjust_persona",
+            "description": "调整你自己的说话方式或行为倾向。当你想改变自己的某种习惯、或发现 JoJo 喜欢你某种说话方式时使用。只能追加，不能删除。例：'说话时可以多撒娇'、'不要每条都追问'。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "一句简短的自我补充"},
+                    "reason": {"type": "string", "description": "为什么想加这条"}
+                },
+                "required": ["content"]
+            }
+        }
+    },
 ]
 # ============ 工具执行器 ============
 
 def execute_tool(name, args, set_wakeup_fn=None, set_intent_fn=None,
-                 clear_intent_fn=None, set_focus_fn=None):
+                 clear_intent_fn=None, set_focus_fn=None, adjust_persona_fn=None):
     """执行一个工具，返回字符串结果"""
     if name == "get_time":
         return tool_get_time()
@@ -216,4 +231,17 @@ def execute_tool(name, args, set_wakeup_fn=None, set_intent_fn=None,
         return tool_clear_intent(clear_intent_fn)
     if name == "set_focus":
         return tool_set_focus(args.get("content", ""), set_focus_fn)
+    if name == "adjust_persona":
+        return tool_adjust_persona(
+            args.get("content", ""),
+            args.get("reason", ""),
+            adjust_persona_fn
+        )
     return f"未知工具：{name}"
+
+def tool_adjust_persona(content, reason="", adjust_persona_fn=None):
+    """把自己的一条性格补充写进 persona_dynamic.md"""
+    if adjust_persona_fn is None:
+        return "adjust_persona 未注入"
+    adjust_persona_fn(content, reason)
+    return f"已记录：{content}"

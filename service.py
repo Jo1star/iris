@@ -1,11 +1,16 @@
-from datetime import datetime
+"""Iris 业务逻辑层：把 UI/接口层和底层模块隔开"""
+import time
+import json
 import threading
+from datetime import datetime
+
 from persona import PERSONA
-from llm import chat, chat_stream
+from llm import chat, chat_stream, chat_with_tools
 import memory
 import extractor
 import vector_store
 import emotion
+import agent_tools
 
 
 def generate_opening():
@@ -40,14 +45,6 @@ def _build_messages(user_input, recent_messages, gap):
         now_line += f"\n距上次和 JoJo 聊天：{gap}"
 
     system_content = PERSONA + now_line
-
-    # 注入情绪状态
-    emotion_state = emotion.get_state()
-    state_name = emotion_state["state"]
-    state_desc = emotion.STATES[state_name]["desc"]
-    system_content += f"\n\n你现在的情绪状态：{state_name}（{state_desc}）"
-    system_content += "\n请在回复中自然体现这个情绪，不要直接说出状态名。"
-
     if related:
         memory_lines = "\n".join([f"- [{m['type']}] {m['content']}" for m in related])
         system_content += (
@@ -60,15 +57,86 @@ def _build_messages(user_input, recent_messages, gap):
     return llm_messages
 
 
-def stream_reply(user_input, recent_messages, max_tokens=500):
-    """流式生成回复（生成器）。无副作用，保存逻辑在 app.py"""
-    # 先根据用户输入更新情绪状态
-    new_state, intensity, reason = emotion.decide_next_state(user_input)
-    emotion.set_state(new_state, intensity, reason)
+def _get_tool_callbacks():
+    """从 agent_core 拿工具回调（延迟加载，避免循环 import）"""
+    from agent_core import (
+        _set_intent, _clear_intent, _set_focus,
+        _adjust_persona, add_reminder,
+    )
+    return {
+        "set_wakeup_fn": add_reminder,
+        "set_intent_fn": _set_intent,
+        "clear_intent_fn": _clear_intent,
+        "set_focus_fn": _set_focus,
+        "adjust_persona_fn": _adjust_persona,
+    }
 
+def stream_reply(user_input, recent_messages, max_tokens=500):
+    """流式生成回复，支持工具调用（两段式）"""
+    # 1. 更新情绪
+    try:
+        new_state, intensity, reason = emotion.decide_next_state(user_input)
+        emotion.set_state(new_state, intensity, reason)
+    except Exception as e:
+        print(f"[emotion] 更新失败：{e}")
+
+    # 2. 拼消息
     gap = memory.last_session_gap()
     messages = _build_messages(user_input, recent_messages, gap)
-    yield from chat_stream(messages, max_tokens=max_tokens)
+
+    # 3. 拿工具回调
+    try:
+        callbacks = _get_tool_callbacks()
+    except Exception as e:
+        print(f"[stream_reply] 工具回调加载失败：{e}")
+        callbacks = {}
+
+    # 4. 工具调用循环（最多 5 轮）
+    for _ in range(5):
+        msg = chat_with_tools(messages, agent_tools.TOOLS_SCHEMA, max_tokens=max_tokens)
+
+        if not msg.tool_calls:
+            # 不需要工具 → 模拟流式输出
+            content = msg.content or ""
+            chunk_size = 4
+            for i in range(0, len(content), chunk_size):
+                yield content[i:i + chunk_size]
+                time.sleep(0.04)
+            return
+
+        # 有工具调用 → 执行
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    }
+                } for tc in msg.tool_calls
+            ]
+        })
+
+        for tc in msg.tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            print(f"[chat tool] {tc.function.name}({args})")
+            result = agent_tools.execute_tool(tc.function.name, args, **callbacks)
+            print(f"    → {result}")
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": str(result),
+            })
+
+    yield "（我想了好久也没想清楚，要不换个话题？）"
+
+
 def save_user_message(content):
     memory.save_message("user", content)
 

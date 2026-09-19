@@ -56,51 +56,20 @@ def jojo_png():
     return FileResponse(BASE_DIR / "jojo.png")
 
 
-# ============ API ============
+# ============ 对话 ============
 
 @app.get("/api/history")
 def history(limit: int = 50):
-    """拉最近对话历史"""
-    return memory.load_recent_messages(limit=limit)
-
-
-@app.get("/api/emotion")
-def get_emotion():
-    """当前情绪状态"""
-    return emotion.get_state()
-
-
-@app.get("/api/agent_messages")
-def get_agent_messages(limit: int = 10):
-    """Iris 主动说的话"""
+    """拉最近对话历史（带时间戳）"""
     conn = memory.get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, content, intent, created_at FROM agent_messages ORDER BY id DESC LIMIT ?",
+        "SELECT role, content, created_at FROM messages ORDER BY id DESC LIMIT ?",
         (limit,)
     )
     rows = cursor.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
-
-
-@app.get("/api/memories")
-def get_memories(limit: int = 30):
-    """长期记忆列表"""
-    return memory.load_memories(limit=limit)
-
-
-@app.get("/api/inner_state")
-def get_inner_state():
-    """Agent 内部状态"""
-    conn = memory.get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT last_thought, current_focus, pending_intent, pending_intent_due, updated_at FROM agent_inner_state WHERE id=1"
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else {}
+    return [dict(r) for r in reversed(rows)]
 
 
 @app.post("/api/chat")
@@ -139,11 +108,79 @@ async def chat(req: ChatRequest):
     )
 
 
+# ============ 情绪 ============
+
+@app.get("/api/emotion")
+def get_emotion():
+    """当前情绪状态"""
+    return emotion.get_state()
+
+
+# ============ Agent 主动消息 ============
+
+@app.get("/api/agent_messages")
+def get_agent_messages(limit: int = 10):
+    """Iris 主动说的话"""
+    conn = memory.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, content, intent, created_at FROM agent_messages ORDER BY id DESC LIMIT ?",
+        (limit,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/inner_state")
+def get_inner_state():
+    """Agent 内部状态"""
+    conn = memory.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT last_thought, current_focus, pending_intent, pending_intent_due, updated_at FROM agent_inner_state WHERE id=1"
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else {}
+
+
+# ============ 记忆 ============
+
+@app.get("/api/memories")
+def get_memories(limit: int = 30):
+    """长期记忆列表"""
+    return memory.load_memories(limit=limit)
+
+
+# ============ 日记 ============
+
 @app.post("/api/diary")
 def write_diary():
     """让 Iris 写今天的日记"""
     return {"result": diary.write_diary()}
 
+
+@app.get("/api/diary_list")
+def diary_list():
+    """列出所有日记文件（返回日期字符串列表，倒序）"""
+    diary_dir = BASE_DIR / "diary"
+    if not diary_dir.exists():
+        return []
+    files = sorted(diary_dir.glob("*.md"), reverse=True)
+    return [f.stem for f in files]
+
+
+@app.get("/api/diary_content")
+def diary_content(date: str):
+    """读取某天的日记内容"""
+    file_path = BASE_DIR / "diary" / f"{date}.md"
+    if not file_path.exists():
+        return {"date": date, "content": "（这天没有日记）"}
+    return {"date": date, "content": file_path.read_text(encoding="utf-8")}
+
+
+# ============ 启动 ============
 
 def start_agent_core():
     """在后台线程跑 Agent 心跳循环"""

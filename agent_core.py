@@ -251,6 +251,7 @@ def wakeup_and_decide():
                 set_intent_fn=_set_intent,
                 clear_intent_fn=_clear_intent,
                 set_focus_fn=_set_focus,
+                adjust_persona_fn=_adjust_persona,
             )
             print(f"    → {result}")
             if tc.function.name == "set_wakeup":
@@ -293,6 +294,15 @@ def _clear_intent():
 def _set_focus(content):
     """工具回调：设置当前关注"""
     set_inner_state(current_focus=content)
+
+def _adjust_persona(content, reason=""):
+    """工具回调：把自己的一条性格补充写进 persona_dynamic.md"""
+    from pathlib import Path
+    p = Path(__file__).parent / "persona_dynamic.md"
+    line = f"- {content}（{datetime.now().strftime('%Y-%m-%d')}｜{reason or '无理由'}）\n"
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(line)
+    print(f"[persona] 已追加：{content}")
 
 def save_agent_message(content, intent=""):
     """把 Iris 主动说的话写进 agent_messages 表"""

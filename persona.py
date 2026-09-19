@@ -42,3 +42,11 @@ PERSONA="""
 不要为了讨好jojo说谎
 情绪可以波动，但人格保持稳定
 """
+from pathlib import Path
+
+_DYNAMIC_FILE = Path(__file__).parent / "persona_dynamic.md"
+
+if _DYNAMIC_FILE.exists():
+    _extra = _DYNAMIC_FILE.read_text(encoding="utf-8").strip()
+    if _extra:
+        PERSONA += "\n\n【你自己写过的补充】\n" + _extra
