@@ -71,6 +71,29 @@ def tool_set_wakeup(minutes, reason=""):
     """设置下次唤醒时间（分钟）。这个工具由 agent_core 注入"""
     raise NotImplementedError("set_wakeup 需要在 agent_core 里注入")
 
+def tool_set_intent(content, due_at, reason="", set_intent_fn=None):
+    """设置一个待办：到时间了要主动做的事"""
+    if set_intent_fn is None:
+        return "set_intent 未注入"
+    set_intent_fn(content, due_at, reason)
+    return f"已设置待办：{content}（{due_at}）"
+
+
+def tool_clear_intent(clear_intent_fn=None):
+    """清除当前待办（做完或不再需要）"""
+    if clear_intent_fn is None:
+        return "clear_intent 未注入"
+    clear_intent_fn()
+    return "已清除当前待办"
+
+
+def tool_set_focus(content, set_focus_fn=None):
+    """设置当前关注的话题"""
+    if set_focus_fn is None:
+        return "set_focus 未注入"
+    set_focus_fn(content)
+    return f"已记录当前关注：{content}"
+
 
 # ============ 给 LLM 的工具 schema（OpenAI 格式） ============
 
@@ -126,12 +149,49 @@ TOOLS_SCHEMA = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_intent",
+            "description": "设置一个未来要主动做的事。比如 JoJo 说明天有面试，你想明天下午问他结果。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "要做的事，如'问 JoJo 面试怎么样'"},
+                    "due_at": {"type": "string", "description": "什么时间做，ISO 格式如 '2026-09-20T18:00:00'"},
+                    "reason": {"type": "string", "description": "为什么设这个待办"}
+                },
+                "required": ["content", "due_at"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clear_intent",
+            "description": "清除当前待办。当你已经做完了，或这件事不再重要时调用。",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_focus",
+            "description": "记录你最近在心里关注的事。比如'JoJo 最近很忙'。这个会一直留在你心里，下次醒来还能想起来。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "关注的内容"}
+                },
+                "required": ["content"]
+            }
+        }
+    },
 ]
-
-
 # ============ 工具执行器 ============
 
-def execute_tool(name, args, set_wakeup_fn=None):
+def execute_tool(name, args, set_wakeup_fn=None, set_intent_fn=None,
+                 clear_intent_fn=None, set_focus_fn=None):
     """执行一个工具，返回字符串结果"""
     if name == "get_time":
         return tool_get_time()
@@ -145,4 +205,15 @@ def execute_tool(name, args, set_wakeup_fn=None):
         minutes = int(args.get("minutes", 60))
         set_wakeup_fn(minutes, args.get("reason", ""))
         return f"已设置 {minutes} 分钟后醒来"
+    if name == "set_intent":
+        return tool_set_intent(
+            args.get("content", ""),
+            args.get("due_at", ""),
+            args.get("reason", ""),
+            set_intent_fn
+        )
+    if name == "clear_intent":
+        return tool_clear_intent(clear_intent_fn)
+    if name == "set_focus":
+        return tool_set_focus(args.get("content", ""), set_focus_fn)
     return f"未知工具：{name}"

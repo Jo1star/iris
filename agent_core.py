@@ -120,9 +120,20 @@ def wakeup_and_decide():
     import agent_tools
     import memory
 
-    # 读内部状态 + 最近的日记
     inner = get_inner_state()
     journal = load_recent_journal(limit=5)
+
+    # 检查待办是否到期
+    pending = inner.get("pending_intent")
+    due_str = inner.get("pending_intent_due")
+    intent_due = False
+    if pending and due_str:
+        try:
+            due = datetime.fromisoformat(due_str)
+            if datetime.now() >= due:
+                intent_due = True
+        except (TypeError, ValueError):
+            pass
 
     # 拼"上次在想什么"
     inner_lines = []
@@ -130,11 +141,17 @@ def wakeup_and_decide():
         inner_lines.append(f"上次醒来时你想的是：{inner['last_thought']}")
     if inner.get("current_focus"):
         inner_lines.append(f"你最近关注的事：{inner['current_focus']}")
-    if inner.get("pending_intent"):
-        inner_lines.append(f"你想在未来做的事：{inner['pending_intent']}（大约 {inner.get('pending_intent_due') or '未定'}）")
+    if pending and not intent_due:
+        inner_lines.append(f"你想在未来做的事：{pending}（大约 {due_str or '未定'}）")
     inner_text = "\n".join(inner_lines) if inner_lines else "（这是你第一次醒来，还没有过往的想法）"
 
-    # 拼"最近记的日记"
+    # 待办到期提示
+    if intent_due:
+        intent_block = f"\n\n【重要】你之前计划现在要做的事：「{pending}」\n现在时间到了，你应该主动做这件事。做完后调 clear_intent 清掉待办。"
+    else:
+        intent_block = ""
+
+    # 日记
     if journal:
         journal_lines = []
         for j in journal:
@@ -150,11 +167,9 @@ def wakeup_and_decide():
     else:
         journal_text = "（没有日记）"
 
-    # 上下文
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M %A")
     gap = memory.last_session_gap(threshold_minutes=60)
 
-    # 拼 system prompt
     system_prompt = PERSONA + f"""
 
 现在你醒来了。现在是 {now_str}。
@@ -165,11 +180,14 @@ def wakeup_and_decide():
 
 你最近几次醒来的日记：
 {journal_text}
+{intent_block}
 
 你可以：
 - 用工具查时间、天气、回忆
 - 决定要不要主动对 JoJo 说一句话
 - 决定自己下次什么时候醒来
+- 如果 JoJo 说了未来会发生的事，用 set_intent 记住，到时主动问他
+- 如果心里装着什么话题，用 set_focus 记下来
 
 规则：
 - 如果现在是深夜（23:00-07:00），除非有特殊理由，不要主动说话，直接设置下次醒来在早上。
@@ -187,7 +205,6 @@ def wakeup_and_decide():
     said_content = None
     wakeup_set = False
 
-    # 决策循环
     for _ in range(5):
         msg = chat_with_tools(messages, agent_tools.TOOLS_SCHEMA, max_tokens=300)
 
@@ -197,6 +214,10 @@ def wakeup_and_decide():
                 save_agent_message(content, intent="主动")
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Iris 说：{content}")
                 said_content = content
+                # 待办做完了就自动清掉
+                if intent_due:
+                    set_inner_state(pending_intent="", pending_intent_due="")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 待办已完成，已清除")
             else:
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Iris 选择沉默")
             break
@@ -219,7 +240,10 @@ def wakeup_and_decide():
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 调用工具：{tc.function.name}({args})")
             result = agent_tools.execute_tool(
                 tc.function.name, args,
-                set_wakeup_fn=lambda m, r: set_next_wakeup(m, r)
+                set_wakeup_fn=lambda m, r: set_next_wakeup(m, r),
+                set_intent_fn=_set_intent,
+                clear_intent_fn=_clear_intent,
+                set_focus_fn=_set_focus,
             )
             print(f"    → {result}")
             if tc.function.name == "set_wakeup":
@@ -232,27 +256,36 @@ def wakeup_and_decide():
                 "content": str(result)
             })
 
-    # 兜底 1：如果她没设 wakeup，默认 60 分钟
     if not wakeup_set:
         set_next_wakeup(60, "兜底：LLM 未主动设置")
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 兜底：默认 60 分钟后醒来")
 
-    # 兜底 2：如果 last_thought 还没值，从她说的话或沉默里推
     if not last_thought:
         if said_content:
             last_thought = f"对 JoJo 说了：{said_content[:30]}"
         else:
             last_thought = "沉默，没什么想说的"
 
-    # 写日记
     if said_content:
         add_journal(observation="", thought=last_thought, action=f"对 JoJo 说：{said_content}")
     else:
         add_journal(observation="", thought=last_thought, action=last_action or "选择沉默")
 
-    # 保存内部状态（现在一定有值了）
     set_inner_state(last_thought=last_thought)
 
+def _set_intent(content, due_at, reason=""):
+    """工具回调：设置待办"""
+    set_inner_state(pending_intent=content, pending_intent_due=due_at)
+
+
+def _clear_intent():
+    """工具回调：清除待办"""
+    set_inner_state(pending_intent="", pending_intent_due="")
+
+
+def _set_focus(content):
+    """工具回调：设置当前关注"""
+    set_inner_state(current_focus=content)
 
 def save_agent_message(content, intent=""):
     """把 Iris 主动说的话写进 agent_messages 表"""
