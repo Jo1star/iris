@@ -7,3 +7,4 @@ __pycache__/
 chroma_db/
 dedup_gray.log
 diary/
+_legacy/

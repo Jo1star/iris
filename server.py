@@ -145,6 +145,18 @@ def write_diary():
     return {"result": diary.write_diary()}
 
 
+def start_agent_core():
+    """在后台线程跑 Agent 心跳循环"""
+    import agent_core
+    agent_core.main_loop()
+
+
 if __name__ == "__main__":
     import uvicorn
+    import threading
+
+    # 后台启动 Agent Core
+    threading.Thread(target=start_agent_core, daemon=True).start()
+
+    # 启动 Web 服务
     uvicorn.run(app, host="0.0.0.0", port=8000)
