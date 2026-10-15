@@ -276,6 +276,7 @@ function App() {
   const [diaryOpen, setDiaryOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const messagesRef = useRef(null);
+  const inputRef = useRef(null);
 
   const showToast = (msg) => {
     setToast(msg);
@@ -382,6 +383,8 @@ function App() {
       });
     } finally {
       setBusy(false);
+      // 发送完自动聚焦，键盘不收起
+      setTimeout(() => inputRef.current?.focus(), 0);
     }
   }
 
@@ -439,11 +442,11 @@ function App() {
 
       <div className="footer">
         <input
+          ref={inputRef}
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder={busy ? 'Iris 正在回复...' : '和 Iris 说点什么...'}
-          disabled={busy}
         />
         <button onClick={send} disabled={busy || !input.trim()}>
           {busy ? '...' : '发送'}
