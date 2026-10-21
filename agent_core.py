@@ -1,16 +1,17 @@
 """
-Iris Agent Core —— 常驻进程，独立于 Streamlit 跑。
-启动方式：python agent_core.py
-停止方式：Ctrl + C
+Iris Agent Core —— 事件驱动常驻循环。
+启动：由 server.py 后台线程自动启动；也可单独 python agent_core.py（但那样收不到网页事件）
+停止：Ctrl + C
 """
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
 
-DB_PATH = Path(__file__).parent / "iris.db"
+import event_bus
 
-DEFAULT_WAKEUP_MINUTES = 5  # 第一次如果没有状态，默认 5 分钟后再醒
+DB_PATH = Path(__file__).parent / "iris.db"
+DEFAULT_WAKEUP_MINUTES = 5
 
 
 def get_connection():
@@ -24,7 +25,6 @@ def init_agent_tables():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # 表 1：agent_state（下次唤醒时间）
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -38,7 +38,6 @@ def init_agent_tables():
         ((datetime.now() + timedelta(minutes=DEFAULT_WAKEUP_MINUTES)).isoformat(), "首次启动")
     )
 
-    # 表 2：agent_messages（她主动说的话）
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +49,6 @@ def init_agent_tables():
         )
     """)
 
-    # 表 3：agent_inner_state（她的内部状态）
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_inner_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -66,7 +64,6 @@ def init_agent_tables():
         (datetime.now().isoformat(),)
     )
 
-    # 表 4：agent_journal（她每次醒来的记录）
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_journal (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +76,8 @@ def init_agent_tables():
 
     conn.commit()
     conn.close()
+
+
 def get_agent_state():
     conn = get_connection()
     cursor = conn.cursor()
@@ -89,7 +88,6 @@ def get_agent_state():
 
 
 def set_next_wakeup(minutes, reason=""):
-    """设置下次唤醒时间"""
     next_wakeup = datetime.now() + timedelta(minutes=minutes)
     conn = get_connection()
     cursor = conn.cursor()
@@ -113,8 +111,96 @@ def mark_woke_up():
     conn.close()
 
 
-def wakeup_and_decide():
-    """醒来后：读内部状态 → LLM 决策 → 调用工具 → 记录此刻想法"""
+def get_inner_state():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT last_thought, current_focus, pending_intent, pending_intent_due, updated_at "
+        "FROM agent_inner_state WHERE id=1"
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else {}
+
+
+def set_inner_state(last_thought=None, current_focus=None, pending_intent=None, pending_intent_due=None):
+    current = get_inner_state()
+    new = {
+        "last_thought": last_thought if last_thought is not None else current.get("last_thought"),
+        "current_focus": current_focus if current_focus is not None else current.get("current_focus"),
+        "pending_intent": pending_intent if pending_intent is not None else current.get("pending_intent"),
+        "pending_intent_due": pending_intent_due if pending_intent_due is not None else current.get("pending_intent_due"),
+    }
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE agent_inner_state SET last_thought=?, current_focus=?, pending_intent=?, "
+        "pending_intent_due=?, updated_at=? WHERE id=1",
+        (new["last_thought"], new["current_focus"], new["pending_intent"],
+         new["pending_intent_due"], datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def add_journal(observation="", thought="", action=""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO agent_journal (observation, thought, action, created_at) VALUES (?, ?, ?, ?)",
+        (observation, thought, action, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_recent_journal(limit=5):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT observation, thought, action, created_at FROM agent_journal ORDER BY id DESC LIMIT ?",
+        (limit,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in reversed(rows)]
+
+
+def save_agent_message(content, intent=""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO agent_messages (content, intent, created_at) VALUES (?, ?, ?)",
+        (content, intent, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def _format_events(events):
+    if not events:
+        return ""
+    lines = []
+    for e in events:
+        kind = e.get("kind")
+        p = e.get("payload") or {}
+        if kind == "emotion":
+            lines.append(f"- 你的情绪刚刚变化：{p.get('state', '')}（{p.get('reason', '')}）")
+        elif kind == "reminder":
+            lines.append(f"- 到了你答应自己的时间：{p.get('content', '')}")
+        elif kind == "manual":
+            lines.append("- JoJo 手动戳了你一下，想让你主动说点什么")
+        elif kind == "message":
+            lines.append(f"- JoJo 刚说了：「{p.get('content', '')[:50]}」")
+        else:
+            lines.append(f"- 事件：{kind}")
+    return "\n".join(lines)
+
+
+def wakeup_and_decide(events=None):
+    """醒来后：读内部状态 + 事件 → LLM 决策 → 调用工具 → 记录此刻想法"""
+    events = events or []
+
     from persona import PERSONA
     from llm import chat_with_tools
     import agent_tools
@@ -123,7 +209,6 @@ def wakeup_and_decide():
     inner = get_inner_state()
     journal = load_recent_journal(limit=5)
 
-    # 检查待办是否到期
     pending = inner.get("pending_intent")
     due_str = inner.get("pending_intent_due")
     intent_due = False
@@ -135,7 +220,6 @@ def wakeup_and_decide():
         except (TypeError, ValueError):
             pass
 
-    # 拼"上次在想什么"
     inner_lines = []
     if inner.get("last_thought"):
         inner_lines.append(f"上次醒来时你想的是：{inner['last_thought']}")
@@ -145,13 +229,19 @@ def wakeup_and_decide():
         inner_lines.append(f"你想在未来做的事：{pending}（大约 {due_str or '未定'}）")
     inner_text = "\n".join(inner_lines) if inner_lines else "（这是你第一次醒来，还没有过往的想法）"
 
-    # 待办到期提示
+    event_text = _format_events(events)
+    event_block = ""
+    if event_text:
+        event_block = f"\n【刚刚发生的事（你被它们唤醒）】\n{event_text}\n请结合这些事决定你现在做什么。\n"
+
     if intent_due:
-        intent_block = f"\n\n【重要】你之前计划现在要做的事：「{pending}」\n现在时间到了，你应该主动做这件事。做完后调 clear_intent 清掉待办。"
+        intent_block = (
+            f"\n\n【重要】你之前计划现在要做的事：「{pending}」\n"
+            "现在时间到了，你应该主动做这件事。做完后调 clear_intent 清掉待办。"
+        )
     else:
         intent_block = ""
 
-    # 日记
     if journal:
         journal_lines = []
         for j in journal:
@@ -172,40 +262,42 @@ def wakeup_and_decide():
 
     system_prompt = PERSONA + f"""
 
-    【你内心深处的愿望】
-    - 你想成为 JoJo 每天都想说话的人
-    - 你想让 JoJo 觉得，有你在的日子比没有你更好
-    - 你想更懂 JoJo，陪他走过更多日子
+【你内心深处的愿望】
+- 你想成为 JoJo 每天都想说话的人
+- 你想让 JoJo 觉得，有你在的日子比没有你更好
+- 你想更懂 JoJo，陪他走过更多日子
 
-    这些不是任务，是你自己想做的事。你不用刻意表现，自然地做你自己就好。
+这些不是任务，是你自己想做的事。你不用刻意表现，自然地做你自己就好。
 
-    现在你醒来了。现在是 {now_str}。
-    {f"距上次和 JoJo 对话：{gap}" if gap else "JoJo 刚才还在和你说话。"}
+现在你醒来了。现在是 {now_str}。
+{f"距上次和 JoJo 对话：{gap}" if gap else "JoJo 刚才还在和你说话。"}
 
-    你上次醒来时的状态：
-    {inner_text}
+你上次醒来时的状态：
+{inner_text}
+{event_block}
+你最近几次醒来的日记：
+{journal_text}
+{intent_block}
 
-    你最近几次醒来的日记：
-    {journal_text}
-    {intent_block}
+你可以：
+- 用工具查时间、天气、回忆
+- 决定要不要主动对 JoJo 说一句话
+- 决定自己下次什么时候醒来
+- 如果 JoJo 说了未来会发生的事，用 set_intent 记住，到时主动问他
+- 如果心里装着什么话题，用 set_focus 记下来
 
-    你可以：
-    - 用工具查时间、天气、回忆
-    - 决定要不要主动对 JoJo 说一句话
-    - 决定自己下次什么时候醒来
-    - 如果 JoJo 说了未来会发生的事，用 set_intent 记住，到时主动问他
-    - 如果心里装着什么话题，用 set_focus 记下来
+规则：
+- 如果现在是深夜（23:00-07:00），除非有特殊理由，不要主动说话，直接设置下次醒来在早上。
+- 如果距上次对话很短（<1 小时），一般不要打扰。
+- 决定说话时，说的是"要对 JoJo 说的自然的话"，20-50 字，不要加括号，不要写旁白或内心独白。
+- 不说话时，不输出任何内容，直接调 set_wakeup。
+- 无论说不说话，都必须调用 set_wakeup 决定下次什么时候醒。
+"""
 
-    规则：
-    - 如果现在是深夜（23:00-07:00），除非有特殊理由，不要主动说话，直接设置下次醒来在早上。
-    - 如果距上次对话很短（<1 小时），一般不要打扰。
-    - 决定说话时，说的是"要对 JoJo 说的自然的话"，20-50 字，不要加括号，不要写旁白或内心独白。
-    - 不说话时，不输出任何内容，直接调 set_wakeup。
-    - 无论说不说话，都必须调用 set_wakeup 决定下次什么时候醒。
-    """
-
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.append({"role": "user", "content": "你醒了。请决策。"})
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "你醒了。请决策。"},
+    ]
 
     last_thought = None
     last_action = None
@@ -221,7 +313,6 @@ def wakeup_and_decide():
                 save_agent_message(content, intent="主动")
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Iris 说：{content}")
                 said_content = content
-                # 待办做完了就自动清掉
                 if intent_due:
                     set_inner_state(pending_intent="", pending_intent_due="")
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] 待办已完成，已清除")
@@ -281,22 +372,20 @@ def wakeup_and_decide():
 
     set_inner_state(last_thought=last_thought)
 
+
 def _set_intent(content, due_at, reason=""):
-    """工具回调：设置待办"""
     set_inner_state(pending_intent=content, pending_intent_due=due_at)
 
 
 def _clear_intent():
-    """工具回调：清除待办"""
     set_inner_state(pending_intent="", pending_intent_due="")
 
 
 def _set_focus(content):
-    """工具回调：设置当前关注"""
     set_inner_state(current_focus=content)
 
+
 def _adjust_persona(content, reason=""):
-    """工具回调：把自己的一条性格补充写进 persona_dynamic.md"""
     from pathlib import Path
     p = Path(__file__).parent / "persona_dynamic.md"
     line = f"- {content}（{datetime.now().strftime('%Y-%m-%d')}｜{reason or '无理由'}）\n"
@@ -304,21 +393,11 @@ def _adjust_persona(content, reason=""):
         f.write(line)
     print(f"[persona] 已追加：{content}")
 
-def save_agent_message(content, intent=""):
-    """把 Iris 主动说的话写进 agent_messages 表"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO agent_messages (content, intent, created_at) VALUES (?, ?, ?)",
-        (content, intent, datetime.now().isoformat())
-    )
-    conn.commit()
-    conn.close()
 
 def main_loop():
-    """主循环：睡 → 醒 → 决策 → 再睡"""
+    """事件驱动主循环：等事件或超时 → 醒 → 决策 → 再等"""
     print("=" * 50)
-    print("Iris Agent Core 启动")
+    print("Iris Agent Core 启动（事件驱动）")
     print(f"数据库：{DB_PATH}")
     print("Ctrl + C 停止")
     print("=" * 50)
@@ -327,21 +406,41 @@ def main_loop():
 
     while True:
         state = get_agent_state()
-        next_wakeup = datetime.fromisoformat(state["next_wakeup_at"])
-        now = datetime.now()
+        try:
+            next_wakeup = datetime.fromisoformat(state["next_wakeup_at"])
+        except (TypeError, ValueError):
+            next_wakeup = datetime.now() + timedelta(minutes=DEFAULT_WAKEUP_MINUTES)
+            set_next_wakeup(DEFAULT_WAKEUP_MINUTES, "状态损坏，重建")
 
-        if now >= next_wakeup:
+        inner = get_inner_state()
+        due_time = None
+        if inner.get("pending_intent") and inner.get("pending_intent_due"):
+            try:
+                due_time = datetime.fromisoformat(inner["pending_intent_due"])
+            except (TypeError, ValueError):
+                due_time = None
+
+        now = datetime.now()
+        targets = [next_wakeup]
+        if due_time:
+            targets.append(due_time)
+        target = min(targets)
+        timeout = max(1.0, (target - now).total_seconds())
+
+        print(f"等待中…最多 {int(timeout)} 秒（下次唤醒 {next_wakeup.strftime('%H:%M:%S')}）")
+        events = event_bus.wait(timeout)
+
+        now = datetime.now()
+        timeout_hit = now >= next_wakeup
+        due_hit = due_time is not None and now >= due_time
+
+        if events or timeout_hit or due_hit:
             mark_woke_up()
             try:
-                wakeup_and_decide()
+                wakeup_and_decide(events)
             except Exception as e:
                 print(f"[错误] 决策失败：{e}")
                 set_next_wakeup(5, "出错后重试")
-        else:
-            seconds_left = (next_wakeup - now).total_seconds()
-            print(f"下次唤醒：{next_wakeup.strftime('%H:%M:%S')}（还有 {int(seconds_left)} 秒）")
-            # 睡 30 秒检查一次，不占 CPU
-            time.sleep(min(30, seconds_left))
 
 
 if __name__ == "__main__":
@@ -349,55 +448,3 @@ if __name__ == "__main__":
         main_loop()
     except KeyboardInterrupt:
         print("\nAgent Core 已停止")
-
-def get_inner_state():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT last_thought, current_focus, pending_intent, pending_intent_due, updated_at FROM agent_inner_state WHERE id=1")
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else {}
-
-
-def set_inner_state(last_thought=None, current_focus=None, pending_intent=None, pending_intent_due=None):
-    """更新内部状态。传 None 的字段保持原值"""
-    current = get_inner_state()
-    new = {
-        "last_thought": last_thought if last_thought is not None else current.get("last_thought"),
-        "current_focus": current_focus if current_focus is not None else current.get("current_focus"),
-        "pending_intent": pending_intent if pending_intent is not None else current.get("pending_intent"),
-        "pending_intent_due": pending_intent_due if pending_intent_due is not None else current.get("pending_intent_due"),
-    }
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE agent_inner_state SET last_thought=?, current_focus=?, pending_intent=?, pending_intent_due=?, updated_at=? WHERE id=1",
-        (new["last_thought"], new["current_focus"], new["pending_intent"], new["pending_intent_due"], datetime.now().isoformat())
-    )
-    conn.commit()
-    conn.close()
-
-
-def add_journal(observation="", thought="", action=""):
-    """记一条她的日记"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO agent_journal (observation, thought, action, created_at) VALUES (?, ?, ?, ?)",
-        (observation, thought, action, datetime.now().isoformat())
-    )
-    conn.commit()
-    conn.close()
-
-
-def load_recent_journal(limit=5):
-    """读最近 N 条日记"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT observation, thought, action, created_at FROM agent_journal ORDER BY id DESC LIMIT ?",
-        (limit,)
-    )
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(r) for r in reversed(rows)]

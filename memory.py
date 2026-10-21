@@ -175,9 +175,6 @@ def _is_conflict(old_content, new_content):
     """用 LLM 判断两条记忆是否矛盾"""
     prompt = f"""判断以下两条关于 JoJo 的记忆是否矛盾。
 
-def _has_negation(content):
-    return any(w in content for w in NEGATION_WORDS)
-
 旧记忆：{old_content}
 新记忆：{new_content}
 

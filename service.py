@@ -11,6 +11,7 @@ import extractor
 import vector_store
 import emotion
 import agent_tools
+import event_bus
 
 
 def generate_opening():
@@ -59,24 +60,43 @@ def _build_messages(user_input, recent_messages, gap):
 
 def _get_tool_callbacks():
     """从 agent_core 拿工具回调（延迟加载，避免循环 import）"""
-    from agent_core import (
-        _set_intent, _clear_intent, _set_focus,
-        _adjust_persona, add_reminder,
-    )
+    try:
+        from agent_core import _set_intent, _clear_intent, _set_focus, _adjust_persona
+    except ImportError:
+        return {}
+
+    try:
+        from agent_core import add_reminder
+        wakeup_fn = add_reminder
+    except ImportError:
+        try:
+            from agent_core import set_next_wakeup
+            wakeup_fn = set_next_wakeup
+        except ImportError:
+            wakeup_fn = None
+
     return {
-        "set_wakeup_fn": add_reminder,
+        "set_wakeup_fn": wakeup_fn,
         "set_intent_fn": _set_intent,
         "clear_intent_fn": _clear_intent,
         "set_focus_fn": _set_focus,
         "adjust_persona_fn": _adjust_persona,
     }
 
+
 def stream_reply(user_input, recent_messages, max_tokens=500):
     """流式生成回复，支持工具调用（两段式）"""
-    # 1. 更新情绪
+    # 1. 更新情绪，并在剧烈变化时唤醒 Agent Core
     try:
+        old_state = emotion.get_state()
         new_state, intensity, reason = emotion.decide_next_state(user_input)
         emotion.set_state(new_state, intensity, reason)
+        if new_state != old_state.get("state") or intensity >= 0.8:
+            event_bus.push("emotion", {
+                "state": new_state,
+                "intensity": intensity,
+                "reason": reason,
+            })
     except Exception as e:
         print(f"[emotion] 更新失败：{e}")
 
@@ -96,7 +116,6 @@ def stream_reply(user_input, recent_messages, max_tokens=500):
         msg = chat_with_tools(messages, agent_tools.TOOLS_SCHEMA, max_tokens=max_tokens)
 
         if not msg.tool_calls:
-            # 不需要工具 → 模拟流式输出
             content = msg.content or ""
             chunk_size = 4
             for i in range(0, len(content), chunk_size):
@@ -104,7 +123,6 @@ def stream_reply(user_input, recent_messages, max_tokens=500):
                 time.sleep(0.04)
             return
 
-        # 有工具调用 → 执行
         messages.append({
             "role": "assistant",
             "content": msg.content or "",

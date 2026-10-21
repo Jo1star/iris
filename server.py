@@ -14,6 +14,7 @@ from pydantic import BaseModel
 import memory
 import emotion
 import diary
+import event_bus
 from service import (
     stream_reply,
     save_user_message,
@@ -24,7 +25,6 @@ from service import (
 BASE_DIR = Path(__file__).parent
 WEB_DIR = BASE_DIR / "web"
 
-# 初始化
 memory.init_db()
 memory.apply_time_decay()
 emotion.init_emotion_table()
@@ -33,13 +33,9 @@ app = FastAPI()
 app.mount("/web", StaticFiles(directory=str(WEB_DIR)), name="web")
 
 
-# ============ 请求模型 ============
-
 class ChatRequest(BaseModel):
     message: str
 
-
-# ============ 页面 ============
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -56,11 +52,8 @@ def jojo_png():
     return FileResponse(BASE_DIR / "jojo.png")
 
 
-# ============ 对话 ============
-
 @app.get("/api/history")
 def history(limit: int = 50):
-    """拉最近对话历史（带时间戳）"""
     conn = memory.get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -74,7 +67,6 @@ def history(limit: int = 50):
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    """流式聊天（SSE）"""
     history_data = memory.load_recent_messages(limit=30)
     save_user_message(req.message)
     history_data.append({"role": "user", "content": req.message})
@@ -108,19 +100,13 @@ async def chat(req: ChatRequest):
     )
 
 
-# ============ 情绪 ============
-
 @app.get("/api/emotion")
 def get_emotion():
-    """当前情绪状态"""
     return emotion.get_state()
 
 
-# ============ Agent 主动消息 ============
-
 @app.get("/api/agent_messages")
 def get_agent_messages(limit: int = 10):
-    """Iris 主动说的话"""
     conn = memory.get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -134,36 +120,29 @@ def get_agent_messages(limit: int = 10):
 
 @app.get("/api/inner_state")
 def get_inner_state():
-    """Agent 内部状态"""
     conn = memory.get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT last_thought, current_focus, pending_intent, pending_intent_due, updated_at FROM agent_inner_state WHERE id=1"
+        "SELECT last_thought, current_focus, pending_intent, pending_intent_due, updated_at "
+        "FROM agent_inner_state WHERE id=1"
     )
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else {}
 
 
-# ============ 记忆 ============
-
 @app.get("/api/memories")
 def get_memories(limit: int = 30):
-    """长期记忆列表"""
     return memory.load_memories(limit=limit)
 
 
-# ============ 日记 ============
-
 @app.post("/api/diary")
 def write_diary():
-    """让 Iris 写今天的日记"""
     return {"result": diary.write_diary()}
 
 
 @app.get("/api/diary_list")
 def diary_list():
-    """列出所有日记文件（返回日期字符串列表，倒序）"""
     diary_dir = BASE_DIR / "diary"
     if not diary_dir.exists():
         return []
@@ -173,17 +152,29 @@ def diary_list():
 
 @app.get("/api/diary_content")
 def diary_content(date: str):
-    """读取某天的日记内容"""
     file_path = BASE_DIR / "diary" / f"{date}.md"
     if not file_path.exists():
         return {"date": date, "content": "（这天没有日记）"}
     return {"date": date, "content": file_path.read_text(encoding="utf-8")}
 
 
-# ============ 启动 ============
+# ============ 手动唤醒 ============
+
+@app.post("/api/wakeup")
+def manual_wakeup():
+    """手动戳一下 Iris，让她立即醒来决策"""
+    event_bus.push("manual", {"from": "web"})
+    return {"ok": True, "message": "已唤醒 Iris"}
+
+
+@app.post("/api/reminder")
+def push_reminder(content: str):
+    """外部推一个提醒事件（可选，给未来扩展用）"""
+    event_bus.push("reminder", {"content": content})
+    return {"ok": True}
+
 
 def start_agent_core():
-    """在后台线程跑 Agent 心跳循环"""
     import agent_core
     agent_core.main_loop()
 
@@ -192,8 +183,6 @@ if __name__ == "__main__":
     import uvicorn
     import threading
 
-    # 后台启动 Agent Core
     threading.Thread(target=start_agent_core, daemon=True).start()
 
-    # 启动 Web 服务
     uvicorn.run(app, host="0.0.0.0", port=8000)
